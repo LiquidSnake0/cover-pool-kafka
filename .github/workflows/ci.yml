@@ -19,6 +19,6 @@ jobs:
 
       - run: dotnet build --no-restore --configuration Release
 
-      # Les règles d'éligibilité et la projection sont des fonctions pures :
-      # elles se testent sans broker, en quelques dizaines de millisecondes.
+      # The eligibility rules and the projection are pure functions, so they
+      # test in tens of milliseconds without a broker.
       - run: dotnet test --no-build --configuration Release --verbosity normal

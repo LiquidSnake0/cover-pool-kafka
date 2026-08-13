@@ -3,8 +3,8 @@ using CoverPool.Contracts;
 namespace CoverPool.Consumer;
 
 /// <summary>
-/// L'état courant d'un prêt, reconstruit en rejouant ses événements.
-/// C'est une projection : rien n'est stocké, tout est dérivé du journal.
+/// The current state of a loan, rebuilt by replaying its events.
+/// This is a projection: nothing is stored, everything is derived from the log.
 /// </summary>
 public class LoanState
 {
@@ -15,7 +15,7 @@ public class LoanState
     public bool InDefault { get; set; }
     public bool IsEligible { get; set; }
 
-    /// <summary>Quotité de financement : capital restant ÷ valeur du bien.</summary>
+    /// <summary>Loan-to-value: outstanding principal divided by property value.</summary>
     public decimal Ltv => PropertyValue <= 0 ? 0 : OutstandingPrincipal / PropertyValue;
 
     public void Apply(LoanEvent e)
@@ -33,9 +33,9 @@ public class LoanState
                 break;
 
             case LoanEventType.Repaid:
-                // Un delta, pas une valeur absolue. C'est précisément ce qui
-                // rend la déduplication indispensable : appliqué deux fois,
-                // le remboursement compte double et le LTV devient faux.
+                // A delta, not an absolute value. This is exactly what makes
+                // deduplication necessary: applied twice, the repayment counts
+                // twice and the LTV is wrong.
                 OutstandingPrincipal -= e.RepaymentAmount ?? 0;
                 break;
 

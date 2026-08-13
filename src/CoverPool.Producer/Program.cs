@@ -9,75 +9,77 @@ var config = new ProducerConfig
 {
     BootstrapServers = bootstrap,
 
-    // Attendre l'accusé de réception de toutes les répliques synchronisées.
-    // Sur un broker unique ça ne change rien ; en production c'est la
-    // différence entre « envoyé » et « durablement écrit ».
+    // Wait for acknowledgement from every in-sync replica. On a single broker
+    // this changes nothing; in production it is the difference between "sent"
+    // and "durably written".
     Acks = Acks.All,
 
-    // Le producteur déduplique ses propres réessais grâce à un identifiant et
-    // un numéro de séquence. Sans ça, un timeout réseau suivi d'un réessai
-    // écrit le message deux fois.
+    // The producer numbers its own messages, so a retry after a network
+    // timeout is recognised and discarded by the broker. Without this, a
+    // timeout followed by a retry writes the message twice.
     EnableIdempotence = true,
 };
 
 using var producer = new ProducerBuilder<string, string>(config).Build();
 
-Console.WriteLine($"Producteur connecté à {bootstrap}, topic « {Topic} »\n");
+Console.WriteLine($"Producer connected to {bootstrap}, topic \"{Topic}\"\n");
 
-foreach (var evenement in Scenario())
+foreach (var loanEvent in Scenario())
 {
     var message = new Message<string, string>
     {
-        // LA ligne importante de tout ce fichier.
-        // La clé décide de la partition. Même prêt → même partition → ordre
-        // garanti pour ce prêt. Sans clé, Kafka répartit au hasard et la
-        // réévaluation peut être traitée après le remboursement.
-        Key = evenement.LoanId,
-        Value = JsonSerializer.Serialize(evenement),
+        // The one line that matters in this file.
+        //
+        // The key decides the partition. Same loan, same partition, so the
+        // events for one loan stay ordered. Without a key Kafka spreads
+        // messages round-robin, and the revaluation can be processed after
+        // the repayment.
+        Key = loanEvent.LoanId,
+        Value = JsonSerializer.Serialize(loanEvent),
     };
 
-    var resultat = await producer.ProduceAsync(Topic, message);
+    var result = await producer.ProduceAsync(Topic, message);
 
     Console.WriteLine(
-        $"→ {evenement.LoanId,-10} {evenement.Type,-11} " +
-        $"partition {resultat.Partition.Value}  offset {resultat.Offset.Value}");
+        $"-> {loanEvent.LoanId,-10} {loanEvent.Type,-11} " +
+        $"partition {result.Partition.Value}  offset {result.Offset.Value}");
 
     await Task.Delay(250);
 }
 
-// Vide le tampon interne avant de sortir. Sans ce Flush, un producteur qui
-// s'arrête juste après ProduceAsync peut perdre ce qui n'est pas encore parti.
+// Drain the internal buffer before exiting. Without this Flush, a producer
+// that stops right after ProduceAsync can lose whatever has not left yet.
 producer.Flush(TimeSpan.FromSeconds(10));
-Console.WriteLine("\nTerminé.");
+Console.WriteLine("\nDone.");
 
 static IEnumerable<LoanEvent> Scenario()
 {
     var t = DateTimeOffset.UtcNow;
 
-    // ── CH-0001 : la démonstration de l'ordre ────────────────────────────
-    // Ces trois événements n'ont de sens que dans cet ordre. Joués à
-    // l'envers, le prêt finit éligible alors qu'il ne devrait pas l'être.
-    yield return LoanEvent.Originated("CH-0001", 400_000m, 500_000m, t);   // LTV 80,0 % → éligible
-    yield return LoanEvent.Revalued("CH-0001", 450_000m, t.AddSeconds(1)); // LTV 88,9 % → sort du pool
-    yield return LoanEvent.Repaid("CH-0001", 50_000m, t.AddSeconds(2));    // LTV 77,8 % → revient
+    // -- CH-0001: the ordering demonstration -----------------------------
+    // These three only make sense in this order. Replayed backwards the loan
+    // ends up eligible when it should not be.
+    yield return LoanEvent.Originated("CH-0001", 400_000m, 500_000m, t);   // LTV 80.0% -> in
+    yield return LoanEvent.Revalued("CH-0001", 450_000m, t.AddSeconds(1)); // LTV 88.9% -> out
+    yield return LoanEvent.Repaid("CH-0001", 50_000m, t.AddSeconds(2));    // LTV 77.8% -> back in
 
-    // ── CH-0002 : défaut ─────────────────────────────────────────────────
-    yield return LoanEvent.Originated("CH-0002", 300_000m, 600_000m, t);   // LTV 50 % → éligible
-    yield return LoanEvent.Defaulted("CH-0002", t.AddSeconds(3));          // sort définitivement
+    // -- CH-0002: default ------------------------------------------------
+    yield return LoanEvent.Originated("CH-0002", 300_000m, 600_000m, t);   // LTV 50% -> in
+    yield return LoanEvent.Defaulted("CH-0002", t.AddSeconds(3));          // out for good
 
-    // ── CH-0003 : refusé dès l'entrée, quotité trop haute ────────────────
-    yield return LoanEvent.Originated("CH-0003", 480_000m, 500_000m, t);   // LTV 96 % → jamais éligible
+    // -- CH-0003: rejected on arrival, LTV too high ----------------------
+    yield return LoanEvent.Originated("CH-0003", 480_000m, 500_000m, t);   // LTV 96% -> never in
 
-    // ── CH-0004 : devise non conforme ────────────────────────────────────
+    // -- CH-0004: ineligible currency ------------------------------------
     yield return LoanEvent.Originated("CH-0004", 200_000m, 400_000m, t, "EUR");
 
-    // ── Du volume, pour voir la répartition entre partitions ─────────────
-    var alea = new Random(42);
+    // -- Volume, to see the spread across partitions ---------------------
+    var random = new Random(42);
     for (var i = 5; i <= 14; i++)
     {
-        var valeur = alea.Next(400, 1_200) * 1_000m;
-        var quotite = alea.Next(45, 95) / 100m;
+        var value = random.Next(400, 1_200) * 1_000m;
+        var ltv = random.Next(45, 95) / 100m;
         yield return LoanEvent.Originated(
-            $"CH-{i:D4}", Math.Round(valeur * quotite), valeur, t.AddSeconds(i));
+            $"CH-{i:D4}", Math.Round(value * ltv), value, t.AddSeconds(i));
     }
 }

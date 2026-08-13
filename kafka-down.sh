@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Arrête Kafka. Sans --purge, le journal est conservé pour le prochain démarrage.
+# Stops Kafka. Without --purge the log is kept for the next start.
 set -euo pipefail
 
-NOM=cover-pool-kafka
+NAME=cover-pool-kafka
 
 if [[ "${1:-}" == "--purge" ]]; then
-  sg docker -c "docker rm -f $NOM" >/dev/null 2>&1 || true
-  echo "Conteneur et journal supprimés."
+  sg docker -c "docker rm -f $NAME" >/dev/null 2>&1 || true
+  echo "Container and log removed."
 else
-  sg docker -c "docker stop $NOM" >/dev/null 2>&1 || true
-  echo "Kafka arrêté. Le journal est conservé — ./kafka-up.sh pour reprendre."
+  sg docker -c "docker stop $NAME" >/dev/null 2>&1 || true
+  echo "Kafka stopped. The log is kept - ./kafka-up.sh to resume."
 fi

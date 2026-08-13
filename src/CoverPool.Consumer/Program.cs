@@ -6,114 +6,114 @@ using CoverPool.Contracts;
 const string Topic = "loan-events";
 
 var bootstrap = Environment.GetEnvironmentVariable("KAFKA_BOOTSTRAP") ?? "localhost:9092";
-var groupe = Environment.GetEnvironmentVariable("KAFKA_GROUP") ?? "cover-pool-builder";
-var nom = Environment.GetEnvironmentVariable("CONSUMER_NAME") ?? "C1";
+var group = Environment.GetEnvironmentVariable("KAFKA_GROUP") ?? "cover-pool-builder";
+var name = Environment.GetEnvironmentVariable("CONSUMER_NAME") ?? "C1";
 
 var config = new ConsumerConfig
 {
     BootstrapServers = bootstrap,
 
-    // Tous les consommateurs qui partagent ce groupe se répartissent les
-    // partitions. Chaque partition n'est lue que par un seul d'entre eux.
-    GroupId = groupe,
+    // Every consumer sharing this group id splits the partitions between them.
+    // Each partition is read by exactly one of them.
+    GroupId = group,
 
-    // Où commencer quand le groupe n'a jamais lu ce topic. Earliest = depuis
-    // le début du journal. Latest = seulement les nouveaux messages.
+    // Where to start when the group has never read this topic. Earliest is
+    // from the beginning of the log, Latest is new messages only. It applies
+    // on the first run only; after that the committed offset wins.
     AutoOffsetReset = AutoOffsetReset.Earliest,
 
-    // On valide l'offset nous-mêmes, APRÈS traitement. C'est ce qui donne la
-    // garantie « au moins une fois » : si le processus tombe entre le
-    // traitement et la validation, le message sera relu au redémarrage.
+    // Offsets are committed by hand, AFTER processing. That is what gives
+    // at-least-once delivery: if the process dies between processing and
+    // committing, the message is read again on restart.
     EnableAutoCommit = false,
 };
 
 using var consumer = new ConsumerBuilder<string, string>(config)
     .SetPartitionsAssignedHandler((_, partitions) =>
-        Console.WriteLine($"\n[{nom}] partitions attribuées : " +
+        Console.WriteLine($"\n[{name}] partitions assigned: " +
                           string.Join(", ", partitions.Select(p => p.Partition.Value)) + "\n"))
     .SetPartitionsRevokedHandler((_, partitions) =>
-        Console.WriteLine($"\n[{nom}] partitions retirées : " +
+        Console.WriteLine($"\n[{name}] partitions revoked: " +
                           string.Join(", ", partitions.Select(p => p.Partition.Value)) + "\n"))
     .Build();
 
 consumer.Subscribe(Topic);
 
-// La projection : l'état du pool, dérivé des événements.
+// The projection: the pool state, derived from the events.
 var pool = new Dictionary<string, LoanState>();
 
-// La déduplication. Kafka livre « au moins une fois » : après un plantage ou
-// un rééquilibrage, tu REVERRAS des messages déjà traités. Sans ce garde-fou,
-// un remboursement rejoué se soustrait deux fois.
-var dejaTraites = new HashSet<string>();
+// Deduplication. Kafka delivers at least once, so after a crash or a rebalance
+// you WILL see messages you have already processed. Without this guard a
+// replayed repayment is subtracted twice.
+var alreadySeen = new HashSet<string>();
 
-var arret = new CancellationTokenSource();
-Console.CancelKeyPress += (_, e) => { e.Cancel = true; arret.Cancel(); };
+var stopping = new CancellationTokenSource();
+Console.CancelKeyPress += (_, e) => { e.Cancel = true; stopping.Cancel(); };
 
-Console.WriteLine($"[{nom}] groupe « {groupe} », en attente sur « {Topic} »");
-Console.WriteLine($"[{nom}] Ctrl+C pour arrêter\n");
+Console.WriteLine($"[{name}] group \"{group}\", waiting on \"{Topic}\"");
+Console.WriteLine($"[{name}] Ctrl+C to stop\n");
 
 try
 {
-    while (!arret.IsCancellationRequested)
+    while (!stopping.IsCancellationRequested)
     {
-        var resultat = consumer.Consume(TimeSpan.FromMilliseconds(500));
-        if (resultat is null) continue;
+        var result = consumer.Consume(TimeSpan.FromMilliseconds(500));
+        if (result is null) continue;
 
-        var evenement = JsonSerializer.Deserialize<LoanEvent>(resultat.Message.Value);
-        if (evenement is null) continue;
+        var loanEvent = JsonSerializer.Deserialize<LoanEvent>(result.Message.Value);
+        if (loanEvent is null) continue;
 
-        if (!dejaTraites.Add(evenement.EventId))
+        if (!alreadySeen.Add(loanEvent.EventId))
         {
-            Console.WriteLine($"[{nom}] doublon ignoré : {evenement.EventId} ({evenement.LoanId})");
-            consumer.Commit(resultat);
+            Console.WriteLine($"[{name}] duplicate ignored: {loanEvent.EventId} ({loanEvent.LoanId})");
+            consumer.Commit(result);
             continue;
         }
 
-        if (!pool.TryGetValue(evenement.LoanId, out var pret))
-            pool[evenement.LoanId] = pret = new LoanState { LoanId = evenement.LoanId };
+        if (!pool.TryGetValue(loanEvent.LoanId, out var loan))
+            pool[loanEvent.LoanId] = loan = new LoanState { LoanId = loanEvent.LoanId };
 
-        var etaitEligible = pret.IsEligible;
-        pret.Apply(evenement);
+        var wasEligible = loan.IsEligible;
+        loan.Apply(loanEvent);
 
-        var (eligible, raison) = EligibilityRules.Evaluate(pret);
-        pret.IsEligible = eligible;
+        var (eligible, reason) = EligibilityRules.Evaluate(loan);
+        loan.IsEligible = eligible;
 
-        var fleche = (etaitEligible, eligible) switch
+        var transition = (wasEligible, eligible) switch
         {
-            (false, true) => "ENTRE",
-            (true, false) => "SORT ",
-            _             => "     ",
+            (false, true) => "IN  ",
+            (true, false) => "OUT ",
+            _             => "    ",
         };
 
         Console.WriteLine(
-            $"[{nom}] p{resultat.Partition.Value} o{resultat.Offset.Value,-3} " +
-            $"{evenement.LoanId,-8} {evenement.Type,-11} {fleche} {raison}");
+            $"[{name}] p{result.Partition.Value} o{result.Offset.Value,-3} " +
+            $"{loanEvent.LoanId,-8} {loanEvent.Type,-11} {transition} {reason}");
 
-        // Validation après traitement. Inverser ces deux lignes ferait passer
-        // la garantie à « au plus une fois » : un plantage entre les deux
-        // perdrait le message définitivement.
-        consumer.Commit(resultat);
+        // Commit after processing. Swapping these two lines would turn this
+        // into at-most-once: a crash in between would lose the message for good.
+        consumer.Commit(result);
 
-        if (fleche.Trim().Length > 0) Resumer(pool, nom);
+        if (transition.Trim().Length > 0) Summarise(pool, name);
     }
 }
 catch (OperationCanceledException) { }
 finally
 {
-    // Quitter proprement déclenche un rééquilibrage immédiat au lieu de
-    // laisser le groupe attendre l'expiration de la session.
+    // Leaving cleanly triggers an immediate rebalance instead of making the
+    // group wait for the session to time out.
     consumer.Close();
-    Console.WriteLine($"\n[{nom}] fermé.");
-    Resumer(pool, nom);
+    Console.WriteLine($"\n[{name}] closed.");
+    Summarise(pool, name);
 }
 
-static void Resumer(Dictionary<string, LoanState> pool, string nom)
+static void Summarise(Dictionary<string, LoanState> pool, string name)
 {
-    var eligibles = pool.Values.Where(p => p.IsEligible).ToList();
-    var total = eligibles.Sum(p => p.OutstandingPrincipal);
-    var exclus = pool.Count - eligibles.Count;
+    var eligible = pool.Values.Where(p => p.IsEligible).ToList();
+    var total = eligible.Sum(p => p.OutstandingPrincipal);
+    var excluded = pool.Count - eligible.Count;
 
     Console.WriteLine(
-        $"        └─ pool : {eligibles.Count} prêts éligibles, " +
-        $"{total:N0} CHF · {exclus} exclus");
+        $"        `- pool: {eligible.Count} eligible loans, " +
+        $"{total:N0} CHF - {excluded} excluded");
 }

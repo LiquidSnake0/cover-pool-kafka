@@ -44,35 +44,35 @@ public class LoanStateTests
     [Fact]
     public void Replaying_a_repayment_subtracts_twice()
     {
-        // Ce test documente le défaut, il ne le corrige pas.
+        // This test documents the flaw, it does not fix it.
         //
-        // Repaid porte un delta, pas une valeur absolue. Kafka livre « au moins
-        // une fois », donc ce rejeu ARRIVERA. C'est exactement pour ça que le
-        // consommateur déduplique sur EventId : sans ce garde-fou, le capital
-        // restant est faux, donc le LTV est faux, donc l'éligibilité est fausse,
-        // donc un chiffre faux part au régulateur.
+        // Repaid carries a delta, not an absolute value. Kafka delivers at
+        // least once, so this replay WILL happen. That is exactly why the
+        // consumer deduplicates on EventId: without the guard, outstanding
+        // principal is wrong, so the LTV is wrong, so eligibility is wrong,
+        // so a wrong figure reaches the regulator.
         var loan = Fresh();
         loan.Apply(LoanEvent.Originated("CH-0001", 400_000m, 500_000m, T));
 
-        var remboursement = LoanEvent.Repaid("CH-0001", 50_000m, T.AddSeconds(1));
-        loan.Apply(remboursement);
-        loan.Apply(remboursement);   // le même événement, relivré
+        var repayment = LoanEvent.Repaid("CH-0001", 50_000m, T.AddSeconds(1));
+        loan.Apply(repayment);
+        loan.Apply(repayment);   // the same event, redelivered
 
-        Assert.Equal(300_000m, loan.OutstandingPrincipal);   // et non 350 000
+        Assert.Equal(300_000m, loan.OutstandingPrincipal);   // not 350,000
     }
 
     [Fact]
     public void Replaying_a_revaluation_is_harmless()
     {
-        // À l'inverse : Revalued porte une valeur absolue, donc le rejeu est
-        // sans effet. La règle générale — des événements absolus sont
-        // naturellement idempotents, des deltas ne le sont pas.
+        // The mirror image: Revalued carries an absolute value, so replaying it
+        // has no effect. The general rule sits in this pair of tests — absolute
+        // events are naturally idempotent, deltas are not.
         var loan = Fresh();
         loan.Apply(LoanEvent.Originated("CH-0001", 400_000m, 500_000m, T));
 
-        var reevaluation = LoanEvent.Revalued("CH-0001", 450_000m, T.AddSeconds(1));
-        loan.Apply(reevaluation);
-        loan.Apply(reevaluation);
+        var revaluation = LoanEvent.Revalued("CH-0001", 450_000m, T.AddSeconds(1));
+        loan.Apply(revaluation);
+        loan.Apply(revaluation);
 
         Assert.Equal(450_000m, loan.PropertyValue);
     }
@@ -90,36 +90,35 @@ public class LoanStateTests
     [Fact]
     public void Order_changes_the_outcome()
     {
-        // Le cœur du projet. Les mêmes trois événements, deux ordres, deux
-        // éligibilités différentes — d'où le partitionnement par LoanId.
+        // The heart of the project. The same three events in two orders give
+        // two different eligibility histories — hence partitioning by LoanId.
         var origination = LoanEvent.Originated("CH-0001", 400_000m, 500_000m, T);
-        var reevaluation = LoanEvent.Revalued("CH-0001", 450_000m, T.AddSeconds(1));
-        var remboursement = LoanEvent.Repaid("CH-0001", 50_000m, T.AddSeconds(2));
+        var revaluation = LoanEvent.Revalued("CH-0001", 450_000m, T.AddSeconds(1));
+        var repayment = LoanEvent.Repaid("CH-0001", 50_000m, T.AddSeconds(2));
 
-        var chronologique = Fresh();
-        foreach (var e in new[] { origination, reevaluation, remboursement })
-            chronologique.Apply(e);
+        var inOrder = Fresh();
+        foreach (var e in new[] { origination, revaluation, repayment })
+            inOrder.Apply(e);
 
-        var desordonne = Fresh();
-        foreach (var e in new[] { origination, remboursement, reevaluation })
-            desordonne.Apply(e);
+        var shuffled = Fresh();
+        foreach (var e in new[] { origination, repayment, revaluation })
+            shuffled.Apply(e);
 
-        // Ici les deux convergent, parce que le remboursement est un delta et
-        // la réévaluation une valeur absolue.
-        Assert.Equal(chronologique.Ltv, desordonne.Ltv);
+        // The end states converge here, because the repayment is a delta and
+        // the revaluation is absolute.
+        Assert.Equal(inOrder.Ltv, shuffled.Ltv);
 
-        // Mais l'ÉTAT INTERMÉDIAIRE diffère, et c'est lui qui déclenche les
-        // entrées et sorties du pool. Dans l'ordre, le prêt sort puis revient ;
-        // dans le désordre, il ne sort jamais. Le pool publié à l'instant t
-        // n'est pas le même.
-        var apresDeuxEvenements = Fresh();
-        apresDeuxEvenements.Apply(origination);
-        apresDeuxEvenements.Apply(reevaluation);
-        Assert.False(EligibilityRules.Evaluate(apresDeuxEvenements).Eligible);
+        // But the INTERMEDIATE state differs, and that is what drives entries
+        // and exits from the pool. In order the loan leaves and comes back; out
+        // of order it never leaves. The pool published at time t is not the same.
+        var afterTwoInOrder = Fresh();
+        afterTwoInOrder.Apply(origination);
+        afterTwoInOrder.Apply(revaluation);
+        Assert.False(EligibilityRules.Evaluate(afterTwoInOrder).Eligible);
 
-        var apresDeuxEvenementsDesordre = Fresh();
-        apresDeuxEvenementsDesordre.Apply(origination);
-        apresDeuxEvenementsDesordre.Apply(remboursement);
-        Assert.True(EligibilityRules.Evaluate(apresDeuxEvenementsDesordre).Eligible);
+        var afterTwoShuffled = Fresh();
+        afterTwoShuffled.Apply(origination);
+        afterTwoShuffled.Apply(repayment);
+        Assert.True(EligibilityRules.Evaluate(afterTwoShuffled).Eligible);
     }
 }

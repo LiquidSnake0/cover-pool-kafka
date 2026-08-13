@@ -1,13 +1,13 @@
 namespace CoverPool.Consumer;
 
 /// <summary>
-/// Les règles qui décident si un prêt peut figurer dans le cover pool.
-/// Volontairement simplifiées — les vraies tiennent dans un document
-/// contractuel de plusieurs dizaines de pages.
+/// The rules deciding whether a loan may sit in the cover pool.
+/// Deliberately simplified — the real ones fill tens of pages of a contractual
+/// document.
 /// </summary>
 public static class EligibilityRules
 {
-    /// <summary>Plafond de quotité usuel pour du résidentiel en covered bond.</summary>
+    /// <summary>Usual LTV cap for residential assets in a covered bond pool.</summary>
     public const decimal MaxLtv = 0.80m;
 
     public const string EligibleCurrency = "CHF";
@@ -15,16 +15,16 @@ public static class EligibilityRules
     public static (bool Eligible, string Reason) Evaluate(LoanState loan)
     {
         if (loan.InDefault)
-            return (false, "en défaut");
+            return (false, "in default");
 
         if (loan.Currency != EligibleCurrency)
-            return (false, $"devise {loan.Currency}");
+            return (false, $"currency {loan.Currency}");
 
         if (loan.OutstandingPrincipal <= 0)
-            return (false, "capital restant nul");
+            return (false, "nothing outstanding");
 
         if (loan.PropertyValue <= 0)
-            return (false, "pas de valorisation");
+            return (false, "no valuation");
 
         if (loan.Ltv > MaxLtv)
             return (false, $"LTV {loan.Ltv:P1} > {MaxLtv:P0}");

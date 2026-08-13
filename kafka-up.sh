@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# Démarre un Kafka mono-nœud en KRaft (sans Zookeeper) et crée le topic.
+# Starts a single-node Kafka in KRaft mode (no Zookeeper) and creates the topic.
 set -euo pipefail
 
-NOM=cover-pool-kafka
+NAME=cover-pool-kafka
 TOPIC=loan-events
 PARTITIONS=3
 
 docker() { command sg docker -c "docker $*"; }
 
-if docker "ps -a --format '{{.Names}}'" | grep -qx "$NOM"; then
-  echo "Conteneur existant, redémarrage…"
-  docker "start $NOM" >/dev/null
+if docker "ps -a --format '{{.Names}}'" | grep -qx "$NAME"; then
+  echo "Container exists, restarting..."
+  docker "start $NAME" >/dev/null
 else
-  echo "Démarrage de Kafka…"
-  docker "run -d --name $NOM \
+  echo "Starting Kafka..."
+  docker "run -d --name $NAME \
     -p 9092:9092 \
     -e KAFKA_NODE_ID=1 \
     -e KAFKA_PROCESS_ROLES=broker,controller \
@@ -30,22 +30,22 @@ else
     apache/kafka:latest" >/dev/null
 fi
 
-printf "Attente du broker"
+printf "Waiting for the broker"
 for _ in $(seq 1 45); do
-  if docker "exec $NOM /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list" \
+  if docker "exec $NAME /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list" \
        >/dev/null 2>&1; then
-    echo " — prêt."
+    echo " - ready."
     break
   fi
   printf "."
   sleep 2
 done
 
-docker "exec $NOM /opt/kafka/bin/kafka-topics.sh \
+docker "exec $NAME /opt/kafka/bin/kafka-topics.sh \
   --bootstrap-server localhost:9092 \
   --create --if-not-exists --topic $TOPIC \
   --partitions $PARTITIONS --replication-factor 1" >/dev/null 2>&1 || true
 
 echo
-docker "exec $NOM /opt/kafka/bin/kafka-topics.sh \
+docker "exec $NAME /opt/kafka/bin/kafka-topics.sh \
   --bootstrap-server localhost:9092 --describe --topic $TOPIC"

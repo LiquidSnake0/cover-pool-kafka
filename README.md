@@ -1,102 +1,99 @@
-# Cover Pool — pipeline d'événements Kafka en .NET
+# Cover Pool — a Kafka event pipeline in .NET
 
-Un producteur émet des événements de crédit hypothécaire. Un consommateur les
-rejoue pour maintenir l'état d'un *cover pool* : quotité de financement,
-éligibilité, total du pool.
+A producer emits mortgage loan events. A consumer replays them to maintain the
+state of a **cover pool**: loan-to-value, eligibility, pool total.
 
-C'est le domaine de l'offre Luxoft/UBS, monté pour rendre vraie la phrase
-« producer/consumer apps in .NET with the Confluent client, topics, partitions,
-consumer groups ».
+Built to understand Kafka properly rather than to have read about it. The domain
+is covered bonds because that is where ordering and idempotence stop being
+abstract: a wrong number here is a wrong number in a regulatory report.
 
 ---
 
-# Étape 0 — Kafka, depuis ce que tu connais déjà
+# Step 0 — Kafka, starting from what you already know
 
-Trois idées fausses à évacuer avant de toucher au code.
+Three misconceptions to clear before touching the code.
 
-### Kafka n'est pas une file d'attente
+### Kafka is not a queue
 
-Une file (MSMQ, RabbitMQ), tu y déposes un message, quelqu'un le prend, **il
-disparaît**. Kafka ne fait pas ça.
+With a queue — MSMQ, RabbitMQ — you put a message in, somebody takes it out,
+**it is gone**. Kafka does not do that.
 
-**Un topic Kafka est un journal append-only qui n'est pas vidé par la lecture.**
-Le message reste. Dix consommateurs différents peuvent lire le même message.
-Tu peux revenir en arrière et tout relire demain.
+**A Kafka topic is an append-only log that reading does not empty.** The message
+stays. Ten different consumers can read the same message. You can go back and
+read it all again tomorrow.
 
-L'équivalent que tu connais : **le journal des transactions de SQL Server.** Une
-suite d'opérations écrites dans l'ordre, conservées, qu'on peut rejouer pour
-reconstruire un état. C'est exactement le modèle mental.
+The closest thing you already know: **the SQL Server transaction log.** A
+sequence of operations written in order, retained, replayable to rebuild a
+state. That is the mental model.
 
-### L'offset est un marque-page, pas un pointeur de file
+### An offset is a bookmark, not a queue pointer
 
-Chaque consommateur note où il en est : c'est l'**offset**. Il est stocké par
-**groupe de consommateurs**, pas par message. Deux équipes qui lisent le même
-topic ont deux marque-pages indépendants.
+Each consumer records where it got to: that is the **offset**. It is stored per
+**consumer group**, not per message. Two teams reading the same topic have two
+independent bookmarks.
 
-Remettre l'offset à zéro = tout relire. C'est une fonctionnalité, pas un
+Resetting the offset to zero re-reads everything. That is a feature, not an
 incident.
 
-### Les partitions, c'est le journal découpé en morceaux
+### Partitions are the log cut into pieces
 
-Un topic à 3 partitions, c'est 3 fichiers journaux indépendants. Pourquoi ?
-Parce qu'un seul fichier ne se lit que séquentiellement — trois se lisent en
-parallèle.
+A topic with 3 partitions is 3 independent log files. Why? Because one file can
+only be read sequentially — three can be read in parallel.
 
-**Le prix à payer : l'ordre n'est garanti qu'à l'intérieur d'une partition.**
-Jamais globalement sur le topic.
+**The price: ordering is only guaranteed within a partition.** Never across the
+topic.
 
-Et c'est là qu'intervient la seule idée vraiment importante de tout ce projet.
+Which brings us to the only idea in this project that really matters.
 
 ---
 
-# Étape 1 — La clé décide de tout
+# Step 1 — The key decides everything
 
-Quand tu produis un message, tu donnes une **clé**. Kafka la hache et en déduit
-la partition — exactement comme un `Dictionary<K,V>` choisit son seau.
-
-```
-hash("CH-0001") % 3  →  partition 0     ← toujours la même
-hash("CH-0006") % 3  →  partition 1
-```
-
-**Conséquence : même clé → même partition → ordre garanti pour cette clé.**
-
-Prends CH-0001 dans ce projet :
+When you produce a message you supply a **key**. Kafka hashes it to pick the
+partition — exactly the way a `Dictionary<K,V>` picks a bucket.
 
 ```
-Originated  400 000 sur un bien à 500 000   →  LTV 80,0 %  → éligible
-Revalued    le bien retombe à 450 000       →  LTV 88,9 %  → sort du pool
-Repaid      50 000 remboursés               →  LTV 77,8 %  → revient
+hash("CH-0001") % 3  ->  partition 0     <- always the same
+hash("CH-0006") % 3  ->  partition 1
 ```
 
-Ces trois événements n'ont de sens que dans cet ordre. Joués à l'envers, le prêt
-finit éligible alors qu'il ne devrait pas l'être — et un chiffre faux part au
-régulateur.
+**So: same key, same partition, ordering guaranteed for that key.**
 
-**Sans clé, Kafka répartit au hasard entre les partitions et cet ordre n'est plus
-garanti.** C'est la ligne à retenir de tout le projet :
+Take CH-0001 in this project:
+
+```
+Originated  400,000 against a property worth 500,000  ->  LTV 80.0%  -> in
+Revalued    the property falls to 450,000             ->  LTV 88.9%  -> out
+Repaid      50,000 paid down                          ->  LTV 77.8%  -> back in
+```
+
+Those three events only make sense in that order. Replayed backwards the loan
+ends up eligible when it should not be — and a wrong figure goes to the
+regulator.
+
+**Without a key, Kafka spreads messages round-robin and that ordering is gone.**
+This is the line to remember from the whole project:
 
 ```csharp
-Key = evenement.LoanId,
+Key = loanEvent.LoanId,
 ```
 
 ---
 
-# Étape 2 — Démarrer le broker
+# Step 2 — Start the broker
 
 ```bash
-cd ~/Documents/cover-pool-kafka
+cd cover-pool-kafka
 ./kafka-up.sh
 ```
 
-Kafka prend environ 1 Go de RAM. **Ferme Chrome avant**, ta machine en a 7,6 au
-total.
+Kafka wants roughly 1 GB of RAM. Close your browser first if the machine is
+tight.
 
-Le script démarre Kafka en mode **KRaft** — la version moderne, sans Zookeeper.
-Si tu tombes sur de la documentation qui parle de Zookeeper, elle est
-antérieure à 2022.
+The script runs Kafka in **KRaft** mode — the modern setup, no Zookeeper. If you
+find documentation talking about Zookeeper, it predates 2022.
 
-Il crée aussi le topic avec **3 partitions**, et affiche :
+It also creates the topic with **3 partitions** and prints:
 
 ```
 Topic: loan-events   PartitionCount: 3   ReplicationFactor: 1
@@ -105,276 +102,241 @@ Topic: loan-events   PartitionCount: 3   ReplicationFactor: 1
     Partition: 2    Leader: 1    Replicas: 1    Isr: 1
 ```
 
-**ReplicationFactor: 1** — une seule copie. En production ce serait 3, réparties
-sur trois brokers. **Isr** = *in-sync replicas*, celles qui sont à jour.
+**ReplicationFactor: 1** — one copy. In production this would be 3, spread over
+three brokers. **Isr** is *in-sync replicas*: the ones that are up to date.
 
 ---
 
-# Étape 3 — Le producteur
+# Step 3 — The producer
 
 `src/CoverPool.Producer/Program.cs`
 
-Trois réglages, et il faut savoir défendre les trois :
+Three settings, all three worth being able to defend:
 
 ```csharp
 Acks = Acks.All,
 ```
-N'accuser réception qu'une fois le message écrit sur **toutes** les répliques
-synchronisées. Avec `Acks.Leader`, tu es confirmé dès que le leader l'a — et si
-le leader tombe avant réplication, le message est perdu. En banque, `All`.
+Only acknowledge once the message is written to **every** in-sync replica. With
+`Acks.Leader` you are confirmed as soon as the leader has it — and if the leader
+dies before replication, the message is lost. In a bank, `All`.
 
 ```csharp
 EnableIdempotence = true,
 ```
-Le producteur numérote ses messages. Si le réseau coupe après l'écriture mais
-avant l'accusé de réception, le client réessaie — et **sans ce réglage le
-message est écrit deux fois**. Avec, le broker reconnaît le numéro de séquence
-et l'ignore.
+The producer numbers its messages. If the network drops after the write but
+before the acknowledgement, the client retries — and **without this setting the
+message is written twice**. With it, the broker recognises the sequence number
+and discards the duplicate.
 
 ```csharp
 producer.Flush(TimeSpan.FromSeconds(10));
 ```
-Le client accumule les messages dans un tampon pour les envoyer par lots. Sortir
-sans `Flush` perd ce qui n'est pas encore parti. **Piège classique.**
+The client batches messages in an internal buffer. Exiting without `Flush` loses
+whatever has not left yet. **Classic trap.**
 
-### Lance-le
+### Run it
 
 ```bash
 dotnet run --project src/CoverPool.Producer
 ```
 
 ```
-→ CH-0001    Originated  partition 0  offset 0
-→ CH-0001    Revalued    partition 0  offset 1
-→ CH-0001    Repaid      partition 0  offset 2
-→ CH-0006    Originated  partition 1  offset 0
-→ CH-0008    Originated  partition 2  offset 0
+-> CH-0001    Originated  partition 0  offset 0
+-> CH-0001    Revalued    partition 0  offset 1
+-> CH-0001    Repaid      partition 0  offset 2
+-> CH-0006    Originated  partition 1  offset 0
+-> CH-0008    Originated  partition 2  offset 0
 ```
 
-**Regarde bien :** les trois CH-0001 sont sur la partition 0. CH-0006 sur la 1,
-CH-0008 sur la 2. Les offsets repartent de 0 dans chaque partition — ils sont
-locaux à la partition, pas globaux.
+**Look carefully:** all three CH-0001 events are on partition 0. CH-0006 is on
+1, CH-0008 on 2. Offsets restart from 0 in each partition — they are local to
+the partition, not global to the topic.
 
 ---
 
-# Étape 4 — Le consommateur
+# Step 4 — The consumer
 
 `src/CoverPool.Consumer/Program.cs`
 
 ```csharp
 GroupId = "cover-pool-builder",
 ```
-Le **groupe**. Tous les consommateurs qui partagent ce nom se répartissent les
-partitions, et **chaque partition n'est lue que par un seul d'entre eux**.
-Conséquence directe : ton parallélisme est plafonné par le nombre de partitions.
-Dix consommateurs sur trois partitions, sept ne font rien.
+The **group**. Every consumer sharing this name splits the partitions between
+them, and **each partition is read by exactly one of them**. Direct consequence:
+parallelism is capped by the partition count. Ten consumers against three
+partitions leaves seven idle.
 
 ```csharp
 AutoOffsetReset = AutoOffsetReset.Earliest,
 ```
-Où commencer quand le groupe n'a jamais lu ce topic. `Earliest` = depuis le
-début du journal. `Latest` = seulement ce qui arrive après. Ça ne s'applique
-**que** la première fois ; ensuite l'offset enregistré fait foi.
+Where to start when the group has never read this topic. `Earliest` is from the
+beginning of the log, `Latest` is only what arrives afterwards. It applies **only**
+the first time; after that the committed offset wins.
 
 ```csharp
 EnableAutoCommit = false,
 ...
-consumer.Commit(resultat);   // APRÈS traitement
+consumer.Commit(result);   // AFTER processing
 ```
 
-Voilà la décision la plus importante du fichier. Tu valides l'offset **après**
-avoir traité le message.
+This is the most important decision in the file. The offset is committed
+**after** the message is processed.
 
-- Commit **après** traitement → si tu plantes entre les deux, le message est
-  relu au redémarrage. C'est **at-least-once** : tu ne perds rien, tu peux
-  doubler.
-- Commit **avant** traitement → si tu plantes, le message est perdu
-  définitivement. C'est **at-most-once**.
+- Commit **after** processing — if you crash in between, the message is read
+  again on restart. That is **at-least-once**: nothing lost, duplicates possible.
+- Commit **before** processing — if you crash, the message is lost for good.
+  That is **at-most-once**.
 
-En banque, on ne perd pas un message. Donc at-least-once, **donc des doublons**,
-donc :
+In a bank you do not lose messages. So at-least-once, **so duplicates**, so:
 
 ```csharp
-var dejaTraites = new HashSet<string>();
+var alreadySeen = new HashSet<string>();
 ...
-if (!dejaTraites.Add(evenement.EventId)) { /* ignoré */ }
+if (!alreadySeen.Add(loanEvent.EventId)) { /* skipped */ }
 ```
 
-**L'idempotence.** Et ce n'est pas théorique dans ce projet : `Repaid` porte un
-**delta**, pas une valeur absolue.
+**Idempotence.** And it is not theoretical here: `Repaid` carries a **delta**,
+not an absolute value.
 
 ```csharp
 OutstandingPrincipal -= e.RepaymentAmount ?? 0;
 ```
 
-Rejoué deux fois, le remboursement se soustrait deux fois, le capital restant
-est faux, le LTV est faux, l'éligibilité est fausse. **Un doublon devient un
-chiffre faux dans un rapport réglementaire.**
+Replayed twice, the repayment subtracts twice, outstanding principal is wrong,
+the LTV is wrong, eligibility is wrong. **A duplicate becomes a wrong figure in
+a regulatory report.**
 
-C'est l'exemple concret à sortir lundi quand on te parlera d'idempotence.
+### Run it
 
-### Lance-le
-
-Dans un second terminal, pendant que Kafka tourne :
+In a second terminal, with Kafka running:
 
 ```bash
 dotnet run --project src/CoverPool.Consumer
 ```
 
 ```
-[C1] partitions attribuées : 0, 1, 2
+[C1] partitions assigned: 0, 1, 2
 
-[C1] p0 o0   CH-0001  Originated  ENTRE LTV 80.0%
-        └─ pool : 7 prêts éligibles, 3,022,760 CHF · 1 exclus
-[C1] p0 o1   CH-0001  Revalued    SORT  LTV 88.9% > 80%
-        └─ pool : 6 prêts éligibles, 2,622,760 CHF · 2 exclus
-[C1] p0 o2   CH-0001  Repaid      ENTRE LTV 77.8%
-        └─ pool : 7 prêts éligibles, 2,972,760 CHF · 1 exclus
+[C1] p0 o0   CH-0001  Originated  IN   LTV 80.0%
+        `- pool: 7 eligible loans, 3,022,760 CHF - 1 excluded
+[C1] p0 o1   CH-0001  Revalued    OUT  LTV 88.9% > 80%
+        `- pool: 6 eligible loans, 2,622,760 CHF - 2 excluded
+[C1] p0 o2   CH-0001  Repaid      IN   LTV 77.8%
+        `- pool: 7 eligible loans, 2,972,760 CHF - 1 excluded
 ```
 
-Un seul consommateur → il reçoit les trois partitions.
+One consumer, so it gets all three partitions.
 
 ---
 
-# Étape 5 — Les quatre manips qui prouvent que tu as compris
+# Step 5 — Four experiments that prove you understood
 
-Ce sont elles qu'on te demandera de raconter, pas le code.
+These are what you get asked to describe, not the code.
 
-## 5.1 — Rejouer le journal depuis zéro
+## 5.1 — Replay the log from zero
 
 ```bash
-KAFKA_GROUP=essai-$RANDOM dotnet run --project src/CoverPool.Consumer
+KAFKA_GROUP=trial-$RANDOM dotnet run --project src/CoverPool.Consumer
 ```
 
-Nouveau nom de groupe = nouveau marque-page = tout est relu depuis le début, et
-l'état du pool se reconstruit à l'identique.
+A new group name is a new bookmark, so everything is read from the start and the
+pool state rebuilds identically.
 
-**Ce que ça démontre :** les données ne sont pas consommées, elles sont
-conservées. L'état est une **projection** du journal, pas une base de vérité.
-Si ta logique d'éligibilité change demain, tu rejoues tout avec les nouvelles
-règles.
+**What it demonstrates:** data is not consumed, it is retained. The state is a
+**projection** of the log, not the source of truth. If the eligibility rules
+change tomorrow, you replay everything under the new rules.
 
-## 5.2 — Le rééquilibrage
+## 5.2 — Rebalancing
 
-Laisse le premier consommateur tourner. Dans un troisième terminal :
+Leave the first consumer running. In a third terminal:
 
 ```bash
 CONSUMER_NAME=C2 dotnet run --project src/CoverPool.Consumer
 ```
 
-Regarde les deux terminaux. Tu verras :
+Watch both terminals:
 
 ```
-[C1] partitions retirées : 0, 1, 2
-[C1] partitions attribuées : 0, 1
-[C2] partitions attribuées : 2
+[C1] partitions revoked: 0, 1, 2
+[C1] partitions assigned: 0, 1
+[C2] partitions assigned: 2
 ```
 
-**Le rééquilibrage.** Kafka a redistribué. Note que **la consommation s'arrête
-pendant l'opération** — c'est pour ça qu'on évite les groupes instables.
+**That is a rebalance.** Note that consumption **stops** while it happens —
+which is why unstable groups are a problem.
 
-Lance un troisième consommateur : une partition chacun. Un quatrième : il reste
-inactif. **Le parallélisme est plafonné par le nombre de partitions.**
+Start a third consumer: one partition each. A fourth: it sits idle.
+**Parallelism is capped by the partition count.**
 
-## 5.3 — Tuer un consommateur
+## 5.3 — Kill a consumer
 
-Ctrl+C sur C2. C1 récupère ses partitions en quelques secondes.
+Ctrl+C on C2. C1 picks its partitions back up within seconds.
 
-Le code appelle `consumer.Close()` dans le `finally` : ça prévient le groupe
-immédiatement. Sans ça, il faut attendre l'expiration de la session
-(`session.timeout.ms`, 45 secondes par défaut) avant que Kafka comprenne que le
-consommateur est parti.
+The code calls `consumer.Close()` in the `finally` block, which tells the group
+immediately. Without it you wait for the session to expire
+(`session.timeout.ms`, 45 seconds by default) before Kafka notices the consumer
+is gone.
 
-## 5.4 — Les doublons
+## 5.4 — Duplicates
 
-Relance le producteur pendant que le consommateur tourne. Les `EventId` sont
-regénérés, donc ce sont de nouveaux événements — mais tu peux forcer la
-démonstration en relançant le consommateur sur un groupe existant après un
-`kill -9` : les messages non validés reviennent, et tu verras
+Kill a consumer with `kill -9` mid-batch, then restart it on the same group.
+Messages processed but not committed come back, and you see:
 
 ```
-[C1] doublon ignoré : a3f9c21e0b44 (CH-0001)
+[C1] duplicate ignored: a3f9c21e0b44 (CH-0001)
 ```
 
 ---
 
-# Étape 6 — Arrêter
+# Step 6 — Stop
 
 ```bash
-./kafka-down.sh            # arrête, garde le journal
-./kafka-down.sh --purge    # supprime tout
+./kafka-down.sh            # stop, keep the log
+./kafka-down.sh --purge    # remove everything
 ```
 
 ---
 
-# Ce que tu dis lundi
+# What is tested
 
-> I built a loan-event pipeline: a producer emitting origination, revaluation,
-> repayment and default events, and a consumer that replays them to maintain a
-> cover pool projection — LTV, eligibility, pool total.
->
-> The design decision that matters is the message key. Events are keyed by loan
-> ID, so all events for one loan land on the same partition and stay ordered.
-> A revaluation followed by a repayment gives a different LTV than the reverse,
-> so ordering per loan is a correctness requirement, not a nice-to-have.
->
-> I commit offsets after processing, which gives at-least-once delivery — so
-> duplicates are possible, and the handler has to be idempotent. That's real
-> here, not theoretical: the repayment event carries a delta, so replaying it
-> would subtract twice and put a wrong figure in the pool. I deduplicate on an
-> event ID.
-
-Si on creuse :
-
-- **« Pourquoi 3 partitions ? »** — Le parallélisme des consommateurs est
-  plafonné par le nombre de partitions. On les dimensionne sur le débit attendu,
-  en sachant qu'augmenter est facile mais que **diminuer ne l'est pas**, et
-  qu'ajouter des partitions change le hachage et donc l'affectation des clés
-  existantes.
-- **« Et l'exactly-once ? »** — Producteur idempotent plus transactions. Ça
-  fonctionne à l'intérieur de Kafka. Dès que l'effet de bord sort de Kafka —
-  une écriture en base — il faut un outbox ou un traitement idempotent. Je suis
-  parti sur l'idempotence, plus simple et plus robuste.
-- **« Et si le consommateur prend du retard ? »** — On surveille le *consumer
-  lag*, l'écart entre le dernier offset produit et le dernier offset validé.
-  C'est la métrique de santé d'un pipeline Kafka.
-
----
-
-## Structure
-
-```
-src/CoverPool.Contracts/    LoanEvent — ce qui circule sur le topic
-src/CoverPool.Producer/     émission des événements, clé = LoanId
-src/CoverPool.Consumer/     projection du pool, règles d'éligibilité, déduplication
-kafka-up.sh / kafka-down.sh Kafka mono-nœud en KRaft, topic à 3 partitions
-```
-
-## Ce que ce projet ne fait pas
-
-Pas de persistance — la projection est en mémoire et repart de zéro à chaque
-lancement. Pas de schéma (Avro, Schema Registry) : du JSON, donc rien
-n'empêche un producteur de casser le contrat. Pas de tests. Pas de gestion des
-messages non traitables (*dead letter*). Un seul broker, donc aucune tolérance
-aux pannes.
-
-C'est un projet de démonstration monté en un week-end, et c'est ce qu'il faut
-dire.
-
-## Ce qui est testé
-
-14 tests, sans broker et sans réseau, 50 ms. Les règles d'éligibilité et la
-projection sont des fonctions pures, donc testables directement.
+14 tests, no broker, no network, 50 ms. The eligibility rules and the projection
+are pure functions, so they are directly testable.
 
 ```bash
 dotnet test
 ```
 
-Deux d'entre eux méritent une lecture, parce qu'ils documentent le raisonnement
-plutôt qu'ils ne vérifient du code :
+Two of them are worth reading, because they document reasoning rather than
+verify code:
 
-- `Replaying_a_repayment_subtracts_twice` — **documente le défaut, ne le corrige
-  pas.** Un remboursement est un delta ; rejoué, il se soustrait deux fois. Il
-  justifie la déduplication côté consommateur.
-- `Replaying_a_revaluation_is_harmless` — l'inverse : une valeur absolue est
-  naturellement idempotente. La règle générale tient dans ces deux tests.
+- `Replaying_a_repayment_subtracts_twice` — **documents the flaw, does not fix
+  it.** A repayment is a delta; replayed, it subtracts twice. It is the
+  justification for deduplicating in the consumer.
+- `Replaying_a_revaluation_is_harmless` — the mirror image: an absolute value is
+  naturally idempotent. The general rule lives in that pair.
+
+---
+
+## Layout
+
+```
+src/CoverPool.Contracts/    LoanEvent — what travels on the topic
+src/CoverPool.Producer/     event emission, key = LoanId
+src/CoverPool.Consumer/     pool projection, eligibility rules, deduplication
+tests/CoverPool.Tests/      14 tests, no broker required
+kafka-up.sh / kafka-down.sh single-node Kafka in KRaft, topic with 3 partitions
+```
+
+## What this does not do
+
+No persistence — the projection is in memory and starts from scratch each run.
+No schema registry: plain JSON, so nothing stops a producer breaking the
+contract. No dead-letter handling for unprocessable messages. One broker, so no
+fault tolerance at all.
+
+It is a demonstration project built over a weekend, and that is what it should
+be called.
+
+## Licence
+
+MIT

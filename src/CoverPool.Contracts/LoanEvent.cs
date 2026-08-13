@@ -1,10 +1,9 @@
 namespace CoverPool.Contracts;
 
 /// <summary>
-/// Ce qui circule sur le topic. Un seul type d'enveloppe pour tous les
-/// événements d'un prêt, parce qu'ils doivent rester ordonnés entre eux :
-/// une réévaluation suivie d'un remboursement ne donne pas le même résultat
-/// dans l'autre sens.
+/// What travels on the topic. One envelope for every kind of loan event,
+/// because they have to stay ordered relative to each other: a revaluation
+/// followed by a repayment does not give the same result as the reverse.
 /// </summary>
 public record LoanEvent(
     string EventId,
@@ -13,7 +12,7 @@ public record LoanEvent(
     DateTimeOffset OccurredAt,
     decimal? Principal = null,        // Originated
     decimal? PropertyValue = null,    // Originated, Revalued
-    decimal? RepaymentAmount = null,  // Repaid  — un delta, d'où le besoin de déduplication
+    decimal? RepaymentAmount = null,  // Repaid — a delta, which is why dedup matters
     string Currency = "CHF")
 {
     public static LoanEvent Originated(string loanId, decimal principal, decimal propertyValue,
@@ -35,15 +34,15 @@ public record LoanEvent(
 
 public enum LoanEventType
 {
-    /// <summary>Le crédit est accordé : montant et valeur du bien.</summary>
+    /// <summary>The loan is granted: principal and property valuation.</summary>
     Originated,
 
-    /// <summary>Le bien est réévalué. Le LTV change sans que le prêt bouge.</summary>
+    /// <summary>The property is revalued. LTV moves without the debt changing.</summary>
     Revalued,
 
-    /// <summary>Remboursement partiel. Le capital restant baisse, le LTV s'améliore.</summary>
+    /// <summary>Partial repayment. Outstanding principal falls, LTV improves.</summary>
     Repaid,
 
-    /// <summary>Défaut de paiement. Sortie immédiate du cover pool.</summary>
+    /// <summary>Payment default. Immediate exit from the cover pool.</summary>
     Defaulted,
 }
