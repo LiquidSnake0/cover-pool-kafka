@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="src/CoverPool.Contracts/CoverPool.Contracts.csproj" />
+  <Project Path="src/CoverPool.Producer/CoverPool.Producer.csproj" />
+  <Project Path="src/CoverPool.Consumer/CoverPool.Consumer.csproj" />
+</Solution>
