@@ -20,12 +20,21 @@ var config = new ProducerConfig
     EnableIdempotence = true,
 };
 
+// Re-sends one event verbatim at the end, same EventId, so the consumer's
+// deduplication can be observed on demand. Kafka would produce this on its own
+// after a crash or a rebalance; forcing it just makes the demo repeatable.
+var withDuplicate = args.Contains("--with-duplicate");
+
 using var producer = new ProducerBuilder<string, string>(config).Build();
 
 Console.WriteLine($"Producer connected to {bootstrap}, topic \"{Topic}\"\n");
 
+var sent = new List<LoanEvent>();
+
 foreach (var loanEvent in Scenario())
 {
+    sent.Add(loanEvent);
+
     var message = new Message<string, string>
     {
         // The one line that matters in this file.
@@ -45,6 +54,24 @@ foreach (var loanEvent in Scenario())
         $"partition {result.Partition.Value}  offset {result.Offset.Value}");
 
     await Task.Delay(250);
+}
+
+if (withDuplicate)
+{
+    // The CH-0001 repayment: the one event where a replay actually corrupts
+    // the projection, because it carries a delta rather than an absolute value.
+    var replayed = sent.First(e => e.Type == LoanEventType.Repaid);
+
+    var result = await producer.ProduceAsync(Topic, new Message<string, string>
+    {
+        Key = replayed.LoanId,
+        Value = JsonSerializer.Serialize(replayed),
+    });
+
+    Console.WriteLine(
+        $"\n-> {replayed.LoanId,-10} {replayed.Type,-11} " +
+        $"partition {result.Partition.Value}  offset {result.Offset.Value}   " +
+        $"REPLAY of event {replayed.EventId}");
 }
 
 // Drain the internal buffer before exiting. Without this Flush, a producer

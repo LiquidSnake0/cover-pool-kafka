@@ -279,12 +279,29 @@ is gone.
 
 ## 5.4 — Duplicates
 
-Kill a consumer with `kill -9` mid-batch, then restart it on the same group.
-Messages processed but not committed come back, and you see:
+With a consumer running, produce the scenario again and re-send one event
+verbatim:
+
+```bash
+dotnet run --project src/CoverPool.Producer -- --with-duplicate
+```
+
+The last line of the producer says `REPLAY of event ...`, and the consumer
+answers:
 
 ```
 [C1] duplicate ignored: a3f9c21e0b44 (CH-0001)
 ```
+
+Kafka would produce that duplicate on its own after a crash or a rebalance; the
+flag only makes it repeatable on demand. The event re-sent is the CH-0001
+repayment — the one where a replay actually corrupts the projection, because it
+carries a delta rather than an absolute value.
+
+**Limitation worth knowing:** the dedup set lives in memory, so it only protects
+within one process lifetime. Restart the consumer and it will happily re-apply
+events it saw before. In production this is a table, keyed by event ID, written
+in the same transaction as the projection.
 
 ---
 
