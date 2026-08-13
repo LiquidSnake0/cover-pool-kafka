@@ -360,3 +360,21 @@ aux pannes.
 
 C'est un projet de démonstration monté en un week-end, et c'est ce qu'il faut
 dire.
+
+## Ce qui est testé
+
+14 tests, sans broker et sans réseau, 50 ms. Les règles d'éligibilité et la
+projection sont des fonctions pures, donc testables directement.
+
+```bash
+dotnet test
+```
+
+Deux d'entre eux méritent une lecture, parce qu'ils documentent le raisonnement
+plutôt qu'ils ne vérifient du code :
+
+- `Replaying_a_repayment_subtracts_twice` — **documente le défaut, ne le corrige
+  pas.** Un remboursement est un delta ; rejoué, il se soustrait deux fois. Il
+  justifie la déduplication côté consommateur.
+- `Replaying_a_revaluation_is_harmless` — l'inverse : une valeur absolue est
+  naturellement idempotente. La règle générale tient dans ces deux tests.
