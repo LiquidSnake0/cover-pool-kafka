@@ -1,10 +1,12 @@
-# Cover Pool — a Kafka event pipeline in .NET
+# Cover Pool Kafka
+
+A Kafka event pipeline in .NET.
 
 A producer emits mortgage loan events. A consumer replays them into a projection
 of a **covered bond cover pool**: loan-to-value per loan, eligibility, pool total.
 
 The domain is deliberate. Covered bonds are where message ordering and
-idempotence stop being abstract properties — the output is a figure that goes
+idempotence stop being abstract properties: the output is a figure that goes
 into a regulatory report, so getting either wrong is not a performance problem,
 it is a wrong number.
 
@@ -79,7 +81,7 @@ ordering is gone.
 applied. That is **at-least-once** delivery: nothing is lost if the process dies
 mid-batch, but a message can be delivered twice.
 
-Committing before processing would be at-most-once — a crash in between loses
+Committing before processing would be at-most-once: a crash in between loses
 the event permanently, which is not acceptable when the output is a regulatory
 figure.
 
@@ -102,14 +104,14 @@ by tests.
 ### The pool is a projection, not a store
 
 Nothing is persisted. The pool state is derived by replaying the log, so a
-change to the eligibility rules does not require a data migration — a fresh
+change to the eligibility rules does not require a data migration. A fresh
 consumer group replays the same events under the new rules, while the existing
 group carries on untouched.
 
 ### Producer settings
 
-`Acks.All` — acknowledge only once every in-sync replica has the write.
-`EnableIdempotence = true` — the producer sequences its messages so a retry
+`Acks.All` acknowledges only once every in-sync replica has the write.
+`EnableIdempotence = true` makes the producer sequence its messages so a retry
 after a network timeout is discarded by the broker rather than written twice.
 
 ---
@@ -128,7 +130,7 @@ sits idle, because parallelism is capped by the partition count.
 
 **Clean shutdown.** Stopping a consumer with Ctrl+C calls `consumer.Close()`,
 which notifies the group immediately. Without it the group waits out
-`session.timeout.ms` — 45 seconds by default — before reassigning.
+`session.timeout.ms` (45 seconds by default) before reassigning.
 
 **Deduplication.** With a consumer running:
 
@@ -171,7 +173,7 @@ deduplicating on event ID.
 ## Layout
 
 ```
-src/CoverPool.Contracts/    LoanEvent — what travels on the topic
+src/CoverPool.Contracts/    LoanEvent: what travels on the topic
 src/CoverPool.Producer/     event emission, key = LoanId
 src/CoverPool.Consumer/     pool projection, eligibility rules, deduplication
 tests/CoverPool.Tests/      14 tests, no broker required

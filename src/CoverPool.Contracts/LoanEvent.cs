@@ -12,7 +12,7 @@ public record LoanEvent(
     DateTimeOffset OccurredAt,
     decimal? Principal = null,        // Originated
     decimal? PropertyValue = null,    // Originated, Revalued
-    decimal? RepaymentAmount = null,  // Repaid — a delta, which is why dedup matters
+    decimal? RepaymentAmount = null,  // Repaid, a delta, which is why dedup matters
     string Currency = "CHF")
 {
     public static LoanEvent Originated(string loanId, decimal principal, decimal propertyValue,

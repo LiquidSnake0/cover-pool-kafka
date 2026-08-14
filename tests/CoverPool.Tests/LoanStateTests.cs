@@ -65,7 +65,7 @@ public class LoanStateTests
     public void Replaying_a_revaluation_is_harmless()
     {
         // The mirror image: Revalued carries an absolute value, so replaying it
-        // has no effect. The general rule sits in this pair of tests — absolute
+        // has no effect. The general rule sits in this pair of tests, absolute
         // events are naturally idempotent, deltas are not.
         var loan = Fresh();
         loan.Apply(LoanEvent.Originated("CH-0001", 400_000m, 500_000m, T));
@@ -91,7 +91,7 @@ public class LoanStateTests
     public void Order_changes_the_outcome()
     {
         // The heart of the project. The same three events in two orders give
-        // two different eligibility histories — hence partitioning by LoanId.
+        // two different eligibility histories, hence partitioning by LoanId.
         var origination = LoanEvent.Originated("CH-0001", 400_000m, 500_000m, T);
         var revaluation = LoanEvent.Revalued("CH-0001", 450_000m, T.AddSeconds(1));
         var repayment = LoanEvent.Repaid("CH-0001", 50_000m, T.AddSeconds(2));

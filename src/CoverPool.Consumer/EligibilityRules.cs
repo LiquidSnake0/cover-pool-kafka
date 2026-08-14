@@ -2,7 +2,7 @@ namespace CoverPool.Consumer;
 
 /// <summary>
 /// The rules deciding whether a loan may sit in the cover pool.
-/// Deliberately simplified — the real ones fill tens of pages of a contractual
+/// Deliberately simplified, the real ones fill tens of pages of a contractual
 /// document.
 /// </summary>
 public static class EligibilityRules
