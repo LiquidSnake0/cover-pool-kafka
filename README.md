@@ -29,6 +29,7 @@ Requirements: Docker and the .NET 10 SDK. Kafka needs roughly 1 GB of RAM.
 ./kafka-up.sh                                    # single-node Kafka, 3 partitions
 dotnet run --project src/CoverPool.Producer      # emit the scenario
 dotnet run --project src/CoverPool.Consumer      # build the pool projection
+./kafka-reset.sh                                 # empty log, no bookmarks
 ./kafka-down.sh                                  # stop, keeping the log
 ```
 
@@ -178,6 +179,7 @@ src/CoverPool.Producer/     event emission, key = LoanId
 src/CoverPool.Consumer/     pool projection, eligibility rules, deduplication
 tests/CoverPool.Tests/      14 tests, no broker required
 kafka-up.sh / kafka-down.sh single-node Kafka in KRaft mode, 3 partitions
+kafka-reset.sh              empty the log and forget every bookmark
 ```
 
 Kafka runs in KRaft mode, so there is no Zookeeper. Documentation that mentions
